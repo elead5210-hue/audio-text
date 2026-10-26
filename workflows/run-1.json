@@ -1,0 +1,319 @@
+{
+    "id": "wf_audio_to_text",
+    "name": "Audio to text transcription service",
+    "version": 1,
+    "nodes": [
+      {
+        "id": "n1",
+        "type": "client_app",
+        "label": "Calling app or API posts audio",
+        "position": {
+          "x": 0,
+          "y": 100
+        },
+        "config": {
+          "appName": "upstream-workflow-app",
+          "event": "audio.submitted",
+          "payloadFields": [
+            "audio",
+            "requestedFunctions",
+            "callerId"
+          ],
+          "notes": "Any app or API in the workflow systems posts an audio file, with a list of the AI guided functions it wants performed."
+        },
+        "ports": {
+          "outputs": [
+            "out"
+          ]
+        }
+      },
+      {
+        "id": "n2",
+        "type": "api",
+        "label": "Audio to text service (container)",
+        "position": {
+          "x": 260,
+          "y": 100
+        },
+        "config": {
+          "method": "POST",
+          "url": "https://audio-to-text.internal.example.com/transcribe",
+          "auth": {
+            "type": "bearer",
+            "secretRef": "AUDIO_TO_TEXT_TOKEN"
+          },
+          "timeoutMs": 600000,
+          "runtime": "container/kubernetes",
+          "transcriptionEngine": "local-whisper",
+          "maxAudioDurationMinutes": 10,
+          "longAudioHandling": "split into segments and transcribe step by step, then merge segments in order",
+          "dataHandling": {
+            "containsPersonalData": true,
+            "encryptInTransit": true,
+            "restrictAccess": true,
+            "redactionOption": "optional, configurable per caller",
+            "retentionPolicy": "to be defined"
+          }
+        },
+        "ports": {
+          "inputs": [
+            "in"
+          ],
+          "outputs": [
+            "success",
+            "error"
+          ]
+        }
+      },
+      {
+        "id": "n3",
+        "type": "api",
+        "label": "Save transcript to main database",
+        "position": {
+          "x": 520,
+          "y": 0
+        },
+        "config": {
+          "method": "POST",
+          "url": "https://db-api.internal.example.com/transcripts",
+          "auth": {
+            "type": "bearer",
+            "secretRef": "MAIN_DB_API_TOKEN"
+          },
+          "timeoutMs": 15000,
+          "body": {
+            "transcript": "{{n2.success.transcript}}",
+            "segments": "{{n2.success.segments}}",
+            "callerId": "{{n1.out.callerId}}"
+          },
+          "dataHandling": {
+            "containsPersonalData": true,
+            "accessControl": "restricted"
+          }
+        },
+        "ports": {
+          "inputs": [
+            "in"
+          ],
+          "outputs": [
+            "success",
+            "error"
+          ]
+        }
+      },
+      {
+        "id": "n4",
+        "type": "api",
+        "label": "AI guided functions (summary, project update roadmap)",
+        "position": {
+          "x": 780,
+          "y": 0
+        },
+        "config": {
+          "method": "POST",
+          "url": "https://ai-functions.internal.example.com/run",
+          "auth": {
+            "type": "bearer",
+            "secretRef": "AI_FUNCTIONS_TOKEN"
+          },
+          "timeoutMs": 120000,
+          "body": {
+            "transcriptId": "{{n3.success.id}}",
+            "transcript": "{{n2.success.transcript}}",
+            "functions": "{{n1.out.requestedFunctions}}"
+          },
+          "availableFunctions": [
+            "summarization",
+            "project_update_roadmap"
+          ],
+          "failureHandling": "per function; each function defines its own retry limit and fallback"
+        },
+        "ports": {
+          "inputs": [
+            "in"
+          ],
+          "outputs": [
+            "success",
+            "error"
+          ]
+        }
+      },
+      {
+        "id": "n5",
+        "type": "api",
+        "label": "Save AI function results to main database",
+        "position": {
+          "x": 1040,
+          "y": 0
+        },
+        "config": {
+          "method": "POST",
+          "url": "https://db-api.internal.example.com/transcript-results",
+          "auth": {
+            "type": "bearer",
+            "secretRef": "MAIN_DB_API_TOKEN"
+          },
+          "timeoutMs": 15000,
+          "body": {
+            "transcriptId": "{{n3.success.id}}",
+            "results": "{{n4.success.results}}"
+          },
+          "dataHandling": {
+            "containsPersonalData": true,
+            "accessControl": "restricted"
+          }
+        },
+        "ports": {
+          "inputs": [
+            "in"
+          ],
+          "outputs": [
+            "success",
+            "error"
+          ]
+        }
+      },
+      {
+        "id": "n6",
+        "type": "notification",
+        "label": "Notify requesting user of error",
+        "position": {
+          "x": 780,
+          "y": 220
+        },
+        "config": {
+          "channel": "requesting-user",
+          "template": "Transcription failed. Details: {{n2.error.message}}",
+          "containsPersonalData": false,
+          "notes": "Default error path. Message must not include transcript or audio content."
+        },
+        "ports": {
+          "inputs": [
+            "in"
+          ]
+        }
+      },
+      {
+        "id": "n7",
+        "type": "notification",
+        "label": "Send alert to Slack",
+        "position": {
+          "x": 1040,
+          "y": 220
+        },
+        "config": {
+          "channel": "#audio-transcription-alerts",
+          "template": "Audio to text workflow problem for caller {{n1.out.callerId}}. Step failed: {{n2.error.message}}",
+          "optional": true,
+          "notes": "Used only for systems that require Slack alerts. Must not include transcript or audio content."
+        },
+        "ports": {
+          "inputs": [
+            "in"
+          ]
+        }
+      }
+    ],
+    "edges": [
+      {
+        "id": "e1",
+        "from": {
+          "node": "n1",
+          "port": "out"
+        },
+        "to": {
+          "node": "n2",
+          "port": "in"
+        }
+      },
+      {
+        "id": "e2",
+        "from": {
+          "node": "n2",
+          "port": "success"
+        },
+        "to": {
+          "node": "n3",
+          "port": "in"
+        }
+      },
+      {
+        "id": "e3",
+        "from": {
+          "node": "n3",
+          "port": "success"
+        },
+        "to": {
+          "node": "n4",
+          "port": "in"
+        }
+      },
+      {
+        "id": "e4",
+        "from": {
+          "node": "n4",
+          "port": "success"
+        },
+        "to": {
+          "node": "n5",
+          "port": "in"
+        }
+      },
+      {
+        "id": "e5",
+        "from": {
+          "node": "n2",
+          "port": "error"
+        },
+        "to": {
+          "node": "n6",
+          "port": "in"
+        }
+      },
+      {
+        "id": "e6",
+        "from": {
+          "node": "n2",
+          "port": "error"
+        },
+        "to": {
+          "node": "n7",
+          "port": "in"
+        }
+      },
+      {
+        "id": "e7",
+        "from": {
+          "node": "n3",
+          "port": "error"
+        },
+        "to": {
+          "node": "n6",
+          "port": "in"
+        }
+      },
+      {
+        "id": "e8",
+        "from": {
+          "node": "n4",
+          "port": "error"
+        },
+        "to": {
+          "node": "n6",
+          "port": "in"
+        }
+      },
+      {
+        "id": "e9",
+        "from": {
+          "node": "n4",
+          "port": "error"
+        },
+        "to": {
+          "node": "n7",
+          "port": "in"
+        }
+      }
+    ],
+    "variables": {}
+  }
